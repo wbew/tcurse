@@ -1,1 +1,2 @@
 - Don't comment code unless asked
+- Write code in `main.rs` or `lib.rs` only
