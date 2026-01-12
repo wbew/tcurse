@@ -2,8 +2,8 @@
 name = "tcurse"
 version = "0.1.0"
 edition = "2021"
-repository = "https://github.com/will-wang/tcurse"
-homepage = "https://github.com/will-wang/tcurse"
+repository = "https://github.com/wbew/tcurse"
+homepage = "https://github.com/wbew/tcurse"
 description = "CLI tool for interacting with the Recurse Center API"
 
 [dependencies]
