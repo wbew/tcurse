@@ -1,9 +1,7 @@
 use chrono::{Local, NaiveDate};
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
 use std::env;
-
-const API_BASE: &str = "https://www.recurse.com/api/v1";
+use tcurse::ApiClient;
 
 #[derive(Parser)]
 #[command(name = "tcurse")]
@@ -32,27 +30,6 @@ enum Commands {
     },
 }
 
-#[derive(Debug, Deserialize)]
-struct Profile {
-    id: i64,
-    #[allow(dead_code)]
-    name: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct HubVisit {
-    date: String,
-    #[serde(default)]
-    notes: Option<String>,
-    person: VisitPerson,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct VisitPerson {
-    id: i64,
-    name: String,
-}
-
 fn get_token() -> String {
     dotenvy::dotenv().ok();
     env::var("RC_TOKEN").expect("RC_TOKEN must be set (via environment or .env file)")
@@ -65,71 +42,18 @@ fn get_date_string(date_arg: Option<String>) -> String {
     }
 }
 
-async fn get_current_user(client: &reqwest::Client, token: &str) -> Result<Profile, String> {
-    let response = client
-        .get(format!("{}/profiles/me", API_BASE))
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("API error: {}", response.status()));
-    }
-
-    response
-        .json::<Profile>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))
-}
-
-async fn get_my_visit(client: &reqwest::Client, token: &str, person_id: i64, date: &str) -> Result<Option<HubVisit>, String> {
-    let response = client
-        .get(format!("{}/hub_visits/{}/{}", API_BASE, person_id, date))
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-
-    if !response.status().is_success() {
-        return Err(format!("API error: {}", response.status()));
-    }
-
-    let visit = response
-        .json::<HubVisit>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-    Ok(Some(visit))
-}
-
-async fn checkin(client: &reqwest::Client, token: &str, notes: Option<String>, remove: bool) -> Result<(), String> {
-    let me = get_current_user(client, token).await?;
+async fn checkin(client: &ApiClient, notes: Option<String>, remove: bool) -> Result<(), String> {
+    let me = client.get_current_user().await?;
     let date = get_date_string(None);
 
-    // Handle removal
     if remove {
-        let response = client
-            .delete(format!("{}/hub_visits/{}/{}", API_BASE, me.id, date))
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(format!("API error: {}", response.status()));
-        }
-
+        client.delete_visit(me.id, &date).await?;
         println!("Removed check-in for {}", date);
         return Ok(());
     }
 
     // Check if already checked in (only block if no new notes to add)
-    if let Some(existing) = get_my_visit(client, token, me.id, &date).await? {
+    if let Some(existing) = client.get_visit(me.id, &date).await? {
         if notes.is_none() {
             println!("Already checked in for {}", existing.date);
             if let Some(n) = existing.notes {
@@ -141,27 +65,7 @@ async fn checkin(client: &reqwest::Client, token: &str, notes: Option<String>, r
         }
     }
 
-    let mut request = client
-        .patch(format!("{}/hub_visits/{}/{}", API_BASE, me.id, date))
-        .bearer_auth(token);
-
-    if let Some(n) = notes {
-        request = request.json(&serde_json::json!({ "notes": n }));
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("API error: {}", response.status()));
-    }
-
-    let visit: HubVisit = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
+    let visit = client.create_or_update_visit(me.id, &date, notes.as_deref()).await?;
 
     println!("Checked in for {}", visit.date);
     if let Some(n) = visit.notes {
@@ -173,29 +77,14 @@ async fn checkin(client: &reqwest::Client, token: &str, notes: Option<String>, r
     Ok(())
 }
 
-async fn get_checked_in(client: &reqwest::Client, token: &str, date: Option<String>) -> Result<(), String> {
+async fn get_checked_in(client: &ApiClient, date: Option<String>) -> Result<(), String> {
     let date_str = get_date_string(date);
 
     // Validate date format
     NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
         .map_err(|_| "Invalid date format. Use YYYY-MM-DD".to_string())?;
 
-    let response = client
-        .get(format!("{}/hub_visits", API_BASE))
-        .query(&[("date", &date_str)])
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("API error: {}", response.status()));
-    }
-
-    let visits: Vec<HubVisit> = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
+    let visits = client.get_visits(&date_str).await?;
 
     if visits.is_empty() {
         println!("No one is checked in for {}", date_str);
@@ -218,11 +107,11 @@ async fn get_checked_in(client: &reqwest::Client, token: &str, date: Option<Stri
 async fn main() {
     let cli = Cli::parse();
     let token = get_token();
-    let client = reqwest::Client::new();
+    let client = ApiClient::new(token);
 
     let result = match cli.command {
-        Commands::Checkin { notes, remove } => checkin(&client, &token, notes, remove).await,
-        Commands::CheckedIn { date } => get_checked_in(&client, &token, date).await,
+        Commands::Checkin { notes, remove } => checkin(&client, notes, remove).await,
+        Commands::CheckedIn { date } => get_checked_in(&client, date).await,
     };
 
     if let Err(e) = result {
