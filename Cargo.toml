@@ -2,6 +2,9 @@
 name = "tcurse"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/will-wang/tcurse"
+homepage = "https://github.com/will-wang/tcurse"
+description = "CLI tool for interacting with the Recurse Center API"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -11,3 +14,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
